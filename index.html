@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Lead tracker</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="theme-color" content="#4B6355" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #EDEEE7; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #262A24; }
+  input, textarea, select, button { font-family: inherit; }
+  input::placeholder, textarea::placeholder { color: #9A9D93; }
+  .lt-input { width: 100%; padding: 10px 12px; border: 1px solid #C9CBC0; border-radius: 6px; background: #FBFBF8; font-size: 14px; color: #262A24; outline: none; }
+  .lt-input:focus { border-color: #4B6355; box-shadow: 0 0 0 2px rgba(75,99,85,0.15); }
+  .lt-label { font-size: 12px; color: #5B6058; margin-bottom: 4px; display: block; }
+  .lt-row:hover { background: #F4F4EF; }
+  .lt-tab { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; }
+  .lt-icon-btn { border: none; background: transparent; cursor: pointer; padding: 3px 6px; color: #7A7D73; border-radius: 4px; font-size: 13px; }
+  .lt-icon-btn:hover { background: #E4E5DD; color: #262A24; }
+  .lt-daycol::-webkit-scrollbar { width: 4px; }
+  @media (max-width: 720px) { .lt-week-grid { grid-auto-columns: 78vw !important; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script>
+  // ---- Fill in with your own Firebase project config (Firebase console > Project settings) ----
+  const firebaseConfig = {
+    apiKey: "AIzaSyB0ijqPF4J0tvJGgaETPjko7JPsA14GoqQ",
+    authDomain: "instantflow-3f8fe.firebaseapp.com",
+    projectId: "instantflow-3f8fe",
+    storageBucket: "instantflow-3f8fe.firebasestorage.app",
+    messagingSenderId: "702841101205",
+    appId: "1:702841101205:web:f8d631acaf28cae8b8749c",
+  };
+  firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+  }
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+const STATUSES = [
+  { key: "new", label: "New", color: "#3B6255", bg: "#E4EBE6" },
+  { key: "screening", label: "Screening", color: "#8A5A2B", bg: "#F1E4D3" },
+  { key: "booked", label: "Booked", color: "#2F5233", bg: "#DEEBE0" },
+  { key: "dead", label: "Dead", color: "#8B3A2F", bg: "#F0DEDB" },
+];
+
+const emptyLeadForm = { name: "", phone: "", email: "", requirements: "", movingDate: "", dealType: "", amount: "", status: "new", source: "Facebook Marketplace", notes: "" };
+const emptyEventForm = { type: "showing", title: "", address: "", date: "", time: "", notes: "" };
+
+function statusMeta(key) { return STATUSES.find((s) => s.key === key) || STATUSES[0]; }
+function fmtDate(d) { if (!d) return ""; try { return new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); } catch { return d; } }
+function toDateStr(d) { const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,"0"), day = String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
+function startOfWeek(date) { const d = new Date(date); const day = d.getDay(); d.setDate(d.getDate() + (day===0?-6:1-day)); d.setHours(0,0,0,0); return d; }
+function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate()+n); return d; }
+function fmtTime(t) { if (!t) return ""; const [h,m] = t.split(":").map(Number); const p = h>=12?"PM":"AM"; const h12 = h%12===0?12:h%12; return `${h12}:${String(m).padStart(2,"0")} ${p}`; }
+function timeToMinutes(t) { if (!t) return -1000; const [h,m] = t.split(":").map(Number); return h*60+m; }
+function formatShort(n) { if (n>=1000000) return "$"+(n%1000000===0?(n/1000000).toFixed(0):(n/1000000).toFixed(1))+"M"; if (n>=1000) return "$"+(n%1000===0?(n/1000).toFixed(0):(n/1000).toFixed(1))+"K"; return "$"+n.toLocaleString(); }
+
+function SignInScreen({ onSignIn }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ textAlign: "center", maxWidth: 320 }}>
+        <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, marginBottom: 8 }}>Lead tracker</h1>
+        <p style={{ fontSize: 14, color: "#5B6058", marginBottom: 22 }}>Sign in with Google to keep your leads and calendar private to you.</p>
+        <button onClick={onSignIn} style={{ padding: "12px 22px", borderRadius: 6, border: "none", background: "#4B6355", color: "#F7F7F3", fontSize: 14, fontWeight: 500, cursor: "pointer" }}>
+          Sign in with Google
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [user, setUser] = useState(undefined);
+  const [view, setView] = useState("leads");
+  const [leads, setLeads] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saveError, setSaveError] = useState("");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [panel, setPanel] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [weekAnchor, setWeekAnchor] = useState(() => new Date());
+  const [eventPanel, setEventPanel] = useState(null);
+  const [confirmDeleteEventId, setConfirmDeleteEventId] = useState(null);
+  const [movePopoverId, setMovePopoverId] = useState(null);
+  const rolledOverRef = useRef(false);
+
+  useEffect(() => {
+    auth.getRedirectResult().catch(() => {});
+    const unsub = auth.onAuthStateChanged((u) => setUser(u || null));
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    setLoading(true);
+    db.collection("users").doc(user.uid).get().then((snap) => {
+      const data = snap.exists ? snap.data() : {};
+      setLeads(data.leads || []);
+      setEvents(data.events || []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [user]);
+
+  useEffect(() => {
+    if (loading || rolledOverRef.current || !user || events.length === 0) return;
+    rolledOverRef.current = true;
+    const today = toDateStr(new Date());
+    let changed = false;
+    const rolled = events.map((e) => {
+      if (!e.done && e.date && e.date < today) { changed = true; return { ...e, date: today }; }
+      return e;
+    });
+    if (changed) persistEvents(rolled);
+  }, [loading, events, user]);
+
+  async function persistLeads(next) {
+    setLeads(next);
+    try {
+      await db.collection("users").doc(user.uid).set({ leads: next }, { merge: true });
+      setSaveError("");
+    } catch (e) { setSaveError("Couldn't save. Check your connection and try again."); }
+  }
+
+  async function persistEvents(next) {
+    setEvents(next);
+    try {
+      await db.collection("users").doc(user.uid).set({ events: next }, { merge: true });
+      setSaveError("");
+    } catch (e) { setSaveError("Couldn't save. Check your connection and try again."); }
+  }
+
+  function openAdd() { setPanel({ mode: "add", form: { ...emptyLeadForm }, id: null }); }
+  function openEdit(lead) { setPanel({ mode: "edit", form: { ...lead }, id: lead.id }); }
+  function closePanel() { setPanel(null); }
+
+  function saveForm(form, mode, id) {
+    if (!form.name.trim()) return { error: "Enter a name first" };
+    if (mode === "add") {
+      const newLead = { ...form, id: `${Date.now()}-${Math.random().toString(36).slice(2,7)}`, createdAt: new Date().toISOString() };
+      persistLeads([newLead, ...leads]);
+    } else {
+      persistLeads(leads.map((l) => (l.id === id ? { ...form, id, createdAt: l.createdAt } : l)));
+    }
+    setPanel(null);
+    return {};
+  }
+
+  function deleteLead(id) { persistLeads(leads.filter((l) => l.id !== id)); setConfirmDeleteId(null); }
+
+  function openAddEvent(dateStr) { setEventPanel({ mode: "add", form: { ...emptyEventForm, date: dateStr || toDateStr(new Date()) }, id: null }); }
+  function openEditEvent(ev) { setEventPanel({ mode: "edit", form: { ...ev }, id: ev.id, originalTime: ev.time }); }
+  function closeEventPanel() { setEventPanel(null); }
+
+  function saveEvent(form, mode, id, originalTime) {
+    if (!form.title.trim()) return { error: "Enter a title first" };
+    if (!form.date) return { error: "Pick a date" };
+    if (mode === "add") {
+      const newEvent = { ...form, id: `${Date.now()}-${Math.random().toString(36).slice(2,7)}`, done: false, order: timeToMinutes(form.time), createdAt: new Date().toISOString() };
+      persistEvents([...events, newEvent]);
+    } else {
+      persistEvents(events.map((e) => {
+        if (e.id !== id) return e;
+        const timeChanged = form.time !== originalTime;
+        return { ...form, id, done: e.done, createdAt: e.createdAt, order: timeChanged ? timeToMinutes(form.time) : e.order };
+      }));
+    }
+    setEventPanel(null);
+    return {};
+  }
+
+  function deleteEvent(id) { persistEvents(events.filter((e) => e.id !== id)); setConfirmDeleteEventId(null); }
+  function toggleEventDone(id) { persistEvents(events.map((e) => (e.id === id ? { ...e, done: !e.done } : e))); }
+  function moveEvent(id, newDate) { persistEvents(events.map((e) => (e.id === id ? { ...e, date: newDate } : e))); setMovePopoverId(null); }
+  function reorderEvent(dateStr, id, direction) {
+    const dayItems = events.filter((e) => e.date === dateStr).sort((a,b) => (a.order-b.order) || (a.createdAt||"").localeCompare(b.createdAt||""));
+    const idx = dayItems.findIndex((e) => e.id === id);
+    const swapIdx = direction === "up" ? idx-1 : idx+1;
+    if (swapIdx < 0 || swapIdx >= dayItems.length) return;
+    const a = dayItems[idx], b = dayItems[swapIdx];
+    persistEvents(events.map((e) => e.id===a.id ? {...e, order:b.order} : e.id===b.id ? {...e, order:a.order} : e));
+  }
+
+  const filtered = useMemo(() => {
+    let list = leads;
+    if (statusFilter !== "all") list = list.filter((l) => l.status === statusFilter);
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      list = list.filter((l) => [l.name,l.phone,l.email,l.requirements,l.notes].some((f) => (f||"").toLowerCase().includes(q)));
+    }
+    return [...list].sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+  }, [leads, query, statusFilter]);
+
+  const stats = useMemo(() => {
+    const rentals = leads.filter((l) => l.dealType === "rent" && Number(l.amount) > 0);
+    const buyers = leads.filter((l) => l.dealType === "buy" && Number(l.amount) > 0);
+    const rentalTotal = rentals.reduce((s,l) => s+Number(l.amount), 0);
+    const buyerTotal = buyers.reduce((s,l) => s+Number(l.amount), 0);
+    return { rentalCount: rentals.length, rentalTotal, rentalCommission: rentalTotal*0.5, buyerCount: buyers.length, buyerTotal, buyerCommission: buyerTotal*0.025 };
+  }, [leads]);
+
+  function exportBackup() {
+    const payload = { exportedAt: new Date().toISOString(), leads, events };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `lead-tracker-backup-${toDateStr(new Date())}.json`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportCsv() {
+    const headers = ["Name","Phone","Email","Requirements","Target date","Deal type","Amount","Status","Source","Notes"];
+    const rows = leads.map((l) => [l.name,l.phone,l.email,l.requirements,l.movingDate,l.dealType,l.amount,statusMeta(l.status).label,l.source,l.notes]);
+    const csv = [headers, ...rows].map((row) => row.map((c) => `"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "leads.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const weekStart = useMemo(() => startOfWeek(weekAnchor), [weekAnchor]);
+  const weekDays = useMemo(() => Array.from({length:7},(_,i) => addDays(weekStart,i)), [weekStart]);
+  const todayStr = toDateStr(new Date());
+  const weekLabel = `${weekDays[0].toLocaleDateString(undefined,{month:"short",day:"numeric"})} - ${weekDays[6].toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"})}`;
+
+  const eventsByDay = useMemo(() => {
+    const map = {};
+    weekDays.forEach((d) => { map[toDateStr(d)] = []; });
+    events.forEach((e) => { if (map[e.date]) map[e.date].push(e); });
+    Object.keys(map).forEach((k) => map[k].sort((a,b) => (a.order-b.order) || (a.createdAt||"").localeCompare(b.createdAt||"")));
+    return map;
+  }, [events, weekDays]);
+
+  if (user === undefined) return <div style={{ minHeight: "100vh" }} />;
+  if (user === null) return <SignInScreen onSignIn={() => auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider())} />;
+
+  return (
+    <div style={{ minHeight: "100vh" }}>
+      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "28px 20px 100px" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h1 style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 28, margin: 0, letterSpacing: "-0.01em" }}>Lead tracker</h1>
+            <p style={{ fontSize: 13, color: "#5B6058", margin: "4px 0 0" }}>
+              {view === "leads" ? `${leads.length} lead${leads.length===1?"":"s"} saved` : `${events.length} item${events.length===1?"":"s"} on the calendar`}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={exportBackup} style={{ padding: "9px 12px", borderRadius: 6, border: "1px solid #C9CBC0", background: "#FBFBF8", fontSize: 13, color: "#5B6058", cursor: "pointer" }}>Backup</button>
+            {view === "leads" ? (
+              <button onClick={openAdd} style={{ padding: "9px 16px", borderRadius: 6, border: "none", background: "#4B6355", color: "#F7F7F3", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>+ Add lead</button>
+            ) : (
+              <button onClick={() => openAddEvent(todayStr)} style={{ padding: "9px 16px", borderRadius: 6, border: "none", background: "#4B6355", color: "#F7F7F3", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>+ Add item</button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 18, background: "#E4E5DD", padding: 4, borderRadius: 8, width: "fit-content" }}>
+          <div className="lt-tab" onClick={() => setView("leads")} style={{ background: view==="leads"?"#FBFBF8":"transparent", color: view==="leads"?"#262A24":"#5B6058" }}>Leads</div>
+          <div className="lt-tab" onClick={() => setView("calendar")} style={{ background: view==="calendar"?"#FBFBF8":"transparent", color: view==="calendar"?"#262A24":"#5B6058" }}>Calendar</div>
+        </div>
+
+        {saveError && <div style={{ background: "#F0DEDB", color: "#8B3A2F", fontSize: 13, padding: "8px 12px", borderRadius: 6, marginBottom: 14 }}>{saveError}</div>}
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: "center", color: "#9A9D93", fontSize: 14 }}>Loading...</div>
+        ) : view === "leads" ? (
+          <LeadsView leads={leads} filtered={filtered} stats={stats} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} openAdd={openAdd} openEdit={openEdit} exportCsv={exportCsv} />
+        ) : (
+          <CalendarView weekDays={weekDays} weekLabel={weekLabel} weekStart={weekStart} setWeekAnchor={setWeekAnchor} todayStr={todayStr} eventsByDay={eventsByDay}
+            openAddEvent={openAddEvent} openEditEvent={openEditEvent} toggleEventDone={toggleEventDone} reorderEvent={reorderEvent}
+            movePopoverId={movePopoverId} setMovePopoverId={setMovePopoverId} moveEvent={moveEvent} />
+        )}
+      </div>
+
+      {panel && <LeadPanel panel={panel} onClose={closePanel} onSave={(form) => saveForm(form, panel.mode, panel.id)} onDelete={panel.mode==="edit" ? () => setConfirmDeleteId(panel.id) : null} />}
+      {eventPanel && <EventPanel panel={eventPanel} onClose={closeEventPanel} onSave={(form) => saveEvent(form, eventPanel.mode, eventPanel.id, eventPanel.originalTime)} onDelete={eventPanel.mode==="edit" ? () => setConfirmDeleteEventId(eventPanel.id) : null} />}
+      {confirmDeleteId && <ConfirmModal title="Delete this lead?" onCancel={() => setConfirmDeleteId(null)} onConfirm={() => deleteLead(confirmDeleteId)} />}
+      {confirmDeleteEventId && <ConfirmModal title="Delete this item?" onCancel={() => setConfirmDeleteEventId(null)} onConfirm={() => deleteEvent(confirmDeleteEventId)} />}
+    </div>
+  );
+}
+
+function LeadsView({ leads, filtered, stats, query, setQuery, statusFilter, setStatusFilter, openAdd, openEdit, exportCsv }) {
+  return (
+    <>
+      {(stats.rentalCount > 0 || stats.buyerCount > 0) && (
+        <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+          {stats.rentalCount > 0 && (
+            <div style={{ flex: "1 1 220px", background: "#E4EBE6", borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 12, fontWeight: 500, color: "#3B6255", textTransform: "uppercase" }}>Rentals</div>
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, margin: "4px 0 2px" }}>{stats.rentalCount} lead{stats.rentalCount===1?"":"s"}</div>
+              <div style={{ fontSize: 13, color: "#5B6058" }}>{formatShort(stats.rentalTotal)} rent · {formatShort(stats.rentalCommission)} comm</div>
+            </div>
+          )}
+          {stats.buyerCount > 0 && (
+            <div style={{ flex: "1 1 220px", background: "#F1E4D3", borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 12, fontWeight: 500, color: "#8A5A2B", textTransform: "uppercase" }}>Buyers</div>
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, margin: "4px 0 2px" }}>{stats.buyerCount} lead{stats.buyerCount===1?"":"s"}</div>
+              <div style={{ fontSize: 13, color: "#5B6058" }}>{formatShort(stats.buyerTotal)} value · {formatShort(stats.buyerCommission)} comm</div>
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        <input className="lt-input" style={{ flex: "1 1 220px" }} placeholder="Search name, phone, requirements..." value={query} onChange={(e) => setQuery(e.target.value)} />
+        <select className="lt-input" style={{ width: 150, flex: "0 0 auto" }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="all">All statuses</option>
+          {STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
+        {leads.length > 0 && <button onClick={exportCsv} style={{ padding: "9px 14px", borderRadius: 6, border: "1px solid #C9CBC0", background: "#FBFBF8", fontSize: 13, color: "#5B6058", cursor: "pointer" }}>CSV</button>}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div style={{ padding: "48px 20px", textAlign: "center", background: "#F7F7F3", borderRadius: 10, border: "1px solid #E0E1D8" }}>
+          <p style={{ fontFamily: "Fraunces, serif", fontSize: 17, margin: "0 0 4px", fontWeight: 500 }}>{leads.length===0?"No leads yet":"No matches"}</p>
+          <p style={{ fontSize: 13, color: "#5B6058", margin: 0 }}>{leads.length===0?"Just a name is enough to start — add details later.":"Try a different search or filter."}</p>
+        </div>
+      ) : (
+        <div style={{ background: "#F7F7F3", borderRadius: 10, border: "1px solid #E0E1D8", overflow: "hidden" }}>
+          {filtered.map((lead, i) => {
+            const sm = statusMeta(lead.status);
+            return (
+              <div key={lead.id} className="lt-row" onClick={() => openEdit(lead)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", cursor: "pointer", borderTop: i===0?"none":"1px solid #E0E1D8", borderLeft: `3px solid ${sm.color}` }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontWeight: 500, fontSize: 15 }}>{lead.name}</span>
+                    <span style={{ fontSize: 11, fontWeight: 500, color: sm.color, background: sm.bg, padding: "1px 8px", borderRadius: 10 }}>{sm.label}</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: "#5B6058", display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
+                    {lead.phone && <span>{lead.phone}</span>}
+                    {Number(lead.amount) > 0 && <span>{formatShort(Number(lead.amount))}{lead.dealType==="rent"?"/mo":""}</span>}
+                    {lead.movingDate && <span>Target {fmtDate(lead.movingDate)}</span>}
+                  </div>
+                  {lead.requirements && <div style={{ fontSize: 13, color: "#7A7D73", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lead.requirements}</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+function CalendarView({ weekDays, weekLabel, weekStart, setWeekAnchor, todayStr, eventsByDay, openAddEvent, openEditEvent, toggleEventDone, reorderEvent, movePopoverId, setMovePopoverId, moveEvent }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={() => setWeekAnchor(addDays(weekStart,-7))} style={{ border: "1px solid #C9CBC0", background: "#FBFBF8", borderRadius: 6, padding: "7px 10px", cursor: "pointer" }}>‹</button>
+          <button onClick={() => setWeekAnchor(new Date())} style={{ border: "1px solid #C9CBC0", background: "#FBFBF8", borderRadius: 6, padding: "7px 12px", cursor: "pointer", fontSize: 13 }}>This week</button>
+          <button onClick={() => setWeekAnchor(addDays(weekStart,7))} style={{ border: "1px solid #C9CBC0", background: "#FBFBF8", borderRadius: 6, padding: "7px 10px", cursor: "pointer" }}>›</button>
+        </div>
+        <span style={{ fontSize: 14, fontWeight: 500, color: "#5B6058" }}>{weekLabel}</span>
+      </div>
+      <div className="lt-week-grid" style={{ display: "grid", gridAutoFlow: "column", gridAutoColumns: "minmax(160px,1fr)", gap: 10, overflowX: "auto", paddingBottom: 8 }}>
+        {weekDays.map((day) => {
+          const dateStr = toDateStr(day);
+          const isToday = dateStr === todayStr;
+          const dayItems = eventsByDay[dateStr] || [];
+          return (
+            <div key={dateStr} style={{ background: "#F7F7F3", border: isToday?"1px solid #4B6355":"1px solid #E0E1D8", borderRadius: 10, display: "flex", flexDirection: "column", minHeight: 280 }}>
+              <div style={{ padding: "10px 12px", borderBottom: "1px solid #E0E1D8", background: isToday?"#E4EBE6":"transparent", borderRadius: "10px 10px 0 0" }}>
+                <div style={{ fontSize: 11, color: "#5B6058", textTransform: "uppercase" }}>{day.toLocaleDateString(undefined,{weekday:"short"})}</div>
+                <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 600, color: isToday?"#3B6255":"#262A24" }}>{day.getDate()}</div>
+              </div>
+              <div className="lt-daycol" style={{ flex: 1, padding: 8, display: "flex", flexDirection: "column", gap: 6, overflowY: "auto" }}>
+                {dayItems.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#B4B6AB", textAlign: "center", padding: "16px 4px" }}>Nothing planned</div>
+                ) : dayItems.map((e, idx) => (
+                  <React.Fragment key={e.id}>
+                    {idx === 0 && !e.time && <div style={{ fontSize: 10, color: "#9A9D93", textTransform: "uppercase", padding: "0 2px" }}>Anytime</div>}
+                    <EventBlock event={e} onToggleDone={() => toggleEventDone(e.id)} onEdit={() => openEditEvent(e)}
+                      onUp={() => reorderEvent(dateStr, e.id, "up")} onDown={() => reorderEvent(dateStr, e.id, "down")}
+                      canUp={idx>0} canDown={idx<dayItems.length-1}
+                      movePopoverOpen={movePopoverId===e.id} onToggleMovePopover={() => setMovePopoverId(movePopoverId===e.id?null:e.id)}
+                      onMove={(d) => moveEvent(e.id,d)} tomorrow={toDateStr(addDays(new Date(dateStr+"T00:00:00"),1))} />
+                  </React.Fragment>
+                ))}
+              </div>
+              <button onClick={() => openAddEvent(dateStr)} style={{ border: "none", borderTop: "1px solid #E0E1D8", background: "transparent", padding: "8px 0", fontSize: 12, color: "#5B6058", cursor: "pointer" }}>+ Add</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ title, onCancel, onConfirm }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(38,42,36,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 20 }}>
+      <div style={{ background: "#FBFBF8", borderRadius: 10, padding: 22, maxWidth: 320, width: "100%" }}>
+        <p style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 500, margin: "0 0 6px" }}>{title}</p>
+        <p style={{ fontSize: 13, color: "#5B6058", margin: "0 0 18px" }}>This can't be undone.</p>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onCancel} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid #C9CBC0", background: "#FBFBF8", fontSize: 13, cursor: "pointer" }}>Cancel</button>
+          <button onClick={onConfirm} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#A24B3F", color: "#FBFBF8", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EventBlock({ event, onToggleDone, onEdit, onUp, onDown, canUp, canDown, movePopoverOpen, onToggleMovePopover, onMove, tomorrow }) {
+  const [customDate, setCustomDate] = useState("");
+  return (
+    <div style={{ background: event.done?"#EFEFEA":"#E4EBE6", borderRadius: 8, padding: "8px 9px", opacity: event.done?0.6:1 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 7 }}>
+        <button onClick={onToggleDone} style={{ flexShrink: 0, marginTop: 1, width: 16, height: 16, borderRadius: 4, border: `1.5px solid ${event.done?"#3B6255":"#9A9D93"}`, background: event.done?"#3B6255":"transparent", cursor: "pointer", padding: 0, color: "#F7F7F3", fontSize: 11, lineHeight: "13px" }}>{event.done?"✓":""}</button>
+        <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={onEdit}>
+          <div style={{ fontSize: 11, fontWeight: 500, color: event.type==="showing"?"#3B6255":"#8A5A2B", marginBottom: 2 }}>{event.type==="showing"?"📍 ":"✓ "}{event.time?fmtTime(event.time):"Anytime"}</div>
+          <div style={{ fontSize: 13, fontWeight: 500, textDecoration: event.done?"line-through":"none" }}>{event.title}</div>
+          {event.address && <div style={{ fontSize: 12, color: "#5B6058", marginTop: 1 }}>{event.address}</div>}
+        </div>
+        <button className="lt-icon-btn" onClick={onToggleMovePopover} title="Move to another day">→</button>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 2, marginTop: 4 }}>
+        <button className="lt-icon-btn" onClick={onUp} disabled={!canUp} style={{ opacity: canUp?1:0.3 }}>▲</button>
+        <button className="lt-icon-btn" onClick={onDown} disabled={!canDown} style={{ opacity: canDown?1:0.3 }}>▼</button>
+      </div>
+      {movePopoverOpen && (
+        <div style={{ marginTop: 6, padding: 8, background: "#FBFBF8", borderRadius: 6, border: "1px solid #E0E1D8", display: "flex", flexDirection: "column", gap: 6 }}>
+          <button onClick={() => onMove(tomorrow)} style={{ padding: "6px 8px", borderRadius: 5, border: "1px solid #C9CBC0", background: "#FBFBF8", fontSize: 12, cursor: "pointer" }}>Move to tomorrow</button>
+          <div style={{ display: "flex", gap: 4 }}>
+            <input type="date" className="lt-input" style={{ padding: "6px 8px", fontSize: 12 }} value={customDate} onChange={(e) => setCustomDate(e.target.value)} />
+            <button onClick={() => customDate && onMove(customDate)} style={{ padding: "6px 10px", borderRadius: 5, border: "none", background: "#4B6355", color: "#F7F7F3", fontSize: 12, cursor: "pointer" }}>Go</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LeadPanel({ panel, onClose, onSave, onDelete }) {
+  const [form, setForm] = useState(panel.form);
+  const [error, setError] = useState("");
+  function update(f,v) { setForm(x => ({...x,[f]:v})); if (error) setError(""); }
+  function handleSave() { const r = onSave(form); if (r && r.error) setError(r.error); }
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(38,42,36,0.35)", zIndex: 50, display: "flex", justifyContent: "flex-end" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#FBFBF8", width: "min(420px,100%)", height: "100%", overflowY: "auto", padding: "22px 22px 100px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, margin: 0 }}>{panel.mode==="add"?"Add lead":"Edit lead"}</h2>
+          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 18, color: "#5B6058" }}>×</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div><label className="lt-label">Name</label><input className="lt-input" value={form.name} onChange={(e) => update("name",e.target.value)} placeholder="Arya" autoFocus /></div>
+          {error && <div style={{ fontSize: 12, color: "#A24B3F" }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}><label className="lt-label">Phone</label><input className="lt-input" value={form.phone} onChange={(e) => update("phone",e.target.value)} placeholder="416-555-0192" /></div>
+            <div style={{ flex: 1 }}><label className="lt-label">Email</label><input className="lt-input" value={form.email} onChange={(e) => update("email",e.target.value)} placeholder="arya@email.com" /></div>
+          </div>
+          <div><label className="lt-label">Specific requirements</label><textarea className="lt-input" rows={3} value={form.requirements} onChange={(e) => update("requirements",e.target.value)} placeholder="2BR, near Square One, parking, no pets" /></div>
+          <div>
+            <label className="lt-label">Deal type</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {["rent","buy"].map(t => (
+                <button key={t} type="button" onClick={() => update("dealType", form.dealType===t?"":t)} style={{ flex: 1, padding: "8px 0", borderRadius: 6, border: `1px solid ${form.dealType===t?"#4B6355":"#C9CBC0"}`, background: form.dealType===t?"#E4EBE6":"#FBFBF8", color: form.dealType===t?"#3B6255":"#5B6058", fontSize: 13, fontWeight: 500, cursor: "pointer", textTransform: "capitalize" }}>{t}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}><label className="lt-label">{form.dealType==="rent"?"Monthly rent":form.dealType==="buy"?"Purchase price":"Amount"}</label><input className="lt-input" type="number" value={form.amount} onChange={(e) => update("amount",e.target.value)} placeholder={form.dealType==="buy"?"650000":"2400"} /></div>
+            <div style={{ flex: 1 }}><label className="lt-label">Target date</label><input className="lt-input" type="date" value={form.movingDate} onChange={(e) => update("movingDate",e.target.value)} /></div>
+          </div>
+          <div><label className="lt-label">Status</label><select className="lt-input" value={form.status} onChange={(e) => update("status",e.target.value)}>{STATUSES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}</select></div>
+          <div><label className="lt-label">Source</label><input className="lt-input" value={form.source} onChange={(e) => update("source",e.target.value)} placeholder="Facebook Marketplace" /></div>
+          <div><label className="lt-label">Notes</label><textarea className="lt-input" rows={3} value={form.notes} onChange={(e) => update("notes",e.target.value)} placeholder="Anything else worth remembering" /></div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 22 }}>
+          <button onClick={handleSave} style={{ flex: 1, padding: "11px 0", borderRadius: 6, border: "none", background: "#4B6355", color: "#F7F7F3", fontSize: 14, fontWeight: 500, cursor: "pointer" }}>Save lead</button>
+          {onDelete && <button onClick={onDelete} style={{ padding: "11px 14px", borderRadius: 6, border: "1px solid #C9CBC0", background: "#FBFBF8", color: "#A24B3F", cursor: "pointer" }}>Delete</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EventPanel({ panel, onClose, onSave, onDelete }) {
+  const [form, setForm] = useState(panel.form);
+  const [error, setError] = useState("");
+  function update(f,v) { setForm(x => ({...x,[f]:v})); if (error) setError(""); }
+  function handleSave() { const r = onSave(form); if (r && r.error) setError(r.error); }
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(38,42,36,0.35)", zIndex: 50, display: "flex", justifyContent: "flex-end" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#FBFBF8", width: "min(400px,100%)", height: "100%", overflowY: "auto", padding: "22px 22px 100px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, margin: 0 }}>{panel.mode==="add"?"Add item":"Edit item"}</h2>
+          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 18, color: "#5B6058" }}>×</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label className="lt-label">Type</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[["showing","Showing"],["task","Task"]].map(([val,label]) => (
+                <button key={val} type="button" onClick={() => update("type",val)} style={{ flex: 1, padding: "8px 0", borderRadius: 6, border: `1px solid ${form.type===val?"#4B6355":"#C9CBC0"}`, background: form.type===val?"#E4EBE6":"#FBFBF8", color: form.type===val?"#3B6255":"#5B6058", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>{label}</button>
+              ))}
+            </div>
+          </div>
+          <div><label className="lt-label">{form.type==="showing"?"Client name":"Task"}</label><input className="lt-input" value={form.title} onChange={(e) => update("title",e.target.value)} placeholder={form.type==="showing"?"Farzana":"Call listing agent"} autoFocus /></div>
+          {form.type==="showing" && <div><label className="lt-label">Address</label><input className="lt-input" value={form.address} onChange={(e) => update("address",e.target.value)} placeholder="123 Saltmarch Drive" /></div>}
+          {error && <div style={{ fontSize: 12, color: "#A24B3F" }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}><label className="lt-label">Date</label><input className="lt-input" type="date" value={form.date} onChange={(e) => update("date",e.target.value)} /></div>
+            <div style={{ flex: 1 }}><label className="lt-label">Time (optional)</label><input className="lt-input" type="time" value={form.time} onChange={(e) => update("time",e.target.value)} /></div>
+          </div>
+          <div><label className="lt-label">Notes</label><textarea className="lt-input" rows={3} value={form.notes} onChange={(e) => update("notes",e.target.value)} placeholder="Access instructions, lockbox code, etc." /></div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 22 }}>
+          <button onClick={handleSave} style={{ flex: 1, padding: "11px 0", borderRadius: 6, border: "none", background: "#4B6355", color: "#F7F7F3", fontSize: 14, fontWeight: 500, cursor: "pointer" }}>Save</button>
+          {onDelete && <button onClick={onDelete} style={{ padding: "11px 14px", borderRadius: 6, border: "1px solid #C9CBC0", background: "#FBFBF8", color: "#A24B3F", cursor: "pointer" }}>Delete</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
